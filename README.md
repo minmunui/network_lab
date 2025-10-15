@@ -267,11 +267,44 @@ sudo modprobe tcp_bbr
 
 ## 고급 실험: 최적의 세그먼트 크기 탐색
 
-`find_optimal_segment.py` 스크립트를 사용하여 MIDTP와 TCP의 최적 세그먼트 크기를 실험적으로 찾을 수 있습니다.
-
 ### 실험 개요
 
-이 실험은 청크(세그먼트) 크기를 1400 바이트부터 15400 바이트까지 변경하며 각 프로토콜의 처리율을 측정합니다. 실험 결과는 그래프로 시각화되어 최적의 세그먼트 크기를 확인할 수 있습니다.
+청크(세그먼트) 크기를 1400 바이트부터 15400 바이트까지 변경하며 각 프로토콜의 처리율을 측정합니다. 실험 결과는 그래프로 시각화되어 최적의 세그먼트 크기를 확인할 수 있습니다.
+
+### 실험 스크립트
+
+1. **`experiment_receiver.py`** - 수신자 전용 스크립트
+2. **`experiment_sender.py`** - 송신자 전용 스크립트
+3. **`find_optimal_segment.py`** - 단일 머신 통합 실험 스크립트 (로컬 테스트용)
+
+### 빠른 시작
+
+**방법 1: 별도 머신 사용 (권장)**
+
+```bash
+# 수신자 머신 (터미널 1)
+python3 experiment_receiver.py --host 0.0.0.0
+
+# 송신자 머신 (터미널 2)
+python3 experiment_sender.py --host <수신자_IP> --file-size 100
+```
+
+**방법 2: 단일 머신 테스트**
+
+```bash
+# 터미널 1: 수신자
+python3 experiment_receiver.py --host 127.0.0.1
+
+# 터미널 2: 송신자
+python3 experiment_sender.py --host 127.0.0.1 --file-size 50
+```
+
+**방법 3: 자동화된 로컬 테스트**
+
+```bash
+# 송신자와 수신자가 자동으로 실행됨
+python3 find_optimal_segment.py --file-size 50
+```
 
 ### 사전 준비
 
@@ -280,39 +313,16 @@ matplotlib 라이브러리를 설치해야 합니다:
 pip3 install matplotlib
 ```
 
-### 실행 방법
+### 결과 저장
 
-**기본 실행 (50MB 파일, 로컬호스트):**
 ```bash
-python3 find_optimal_segment.py
+python3 experiment_sender.py --host 192.168.1.100 --file-size 100 --output results.png
 ```
 
-**파일 크기 변경:**
-```bash
-python3 find_optimal_segment.py --file-size 100
-```
+### 상세 가이드
 
-**결과를 이미지로 저장:**
-```bash
-python3 find_optimal_segment.py --output optimal_segment_results.png
-```
-
-**원격 수신자 테스트:**
-```bash
-# 수신자 측 (IP: 192.168.1.100)
-python3 find_optimal_segment.py --host 0.0.0.0
-
-# 송신자 측
-python3 find_optimal_segment.py --host 192.168.1.100
-```
-
-### 실험 결과 해석
-
-- **X축**: 청크(세그먼트) 크기 (바이트)
-- **Y축**: 처리율 (MB/s)
-- **노란색 마커**: MIDTP의 최적 세그먼트 크기
-
-일반적으로 MIDTP는 특정 세그먼트 크기에서 최대 처리율을 보이며, 너무 작거나 큰 세그먼트 크기에서는 성능이 저하됩니다. 이는 UDP 버퍼 오버플로우와 관련이 있습니다.
+- **`EXPERIMENT_QUICKSTART.md`** - 빠른 시작 가이드
+- **`EXPERIMENT_GUIDE.md`** - 완전한 실험 가이드 (이론, 분석, 문제 해결)
 
 ## 라이선스
 

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-최적의 세그먼트 크기 탐색 실험
+최적의 세그먼트 크기 탐색 실험 - 송신자 (Sender)
 
-MIDTP와 TCP의 청크(세그먼트) 크기에 따른 처리율을 측정하여
-최적의 세그먼트 크기를 찾는 실험 스크립트입니다.
-논문의 그래프 1을 재현합니다.
+실험을 위한 전용 송신자 프로그램입니다.
+다양한 청크 크기로 TCP와 MIDTP 프로토콜을 테스트합니다.
+
+사용법:
+    python3 experiment_sender.py --host 192.168.1.100 --file-size 100
 """
 
 import socket
@@ -13,18 +15,8 @@ import os
 import struct
 import time
 import math
-import threading
 import matplotlib.pyplot as plt
 from typing import List, Tuple
-
-# --- 실험 환경 설정 ---
-DEFAULT_FILE_SIZE_MB = 50
-DEFAULT_RECEIVER_HOST = "127.0.0.1"  # 로컬 테스트용. 원격 테스트 시 수신자 IP로 변경
-DEFAULT_TCP_PORT = 9998
-DEFAULT_MIDTP_PORT = 9999
-CHUNK_SIZE_RANGE = range(
-    1400, 15401, 1400
-)  # 1400부터 15400까지 1400씩 증가 (약 10구간)
 
 # --- MIDTP 프로토콜 상수 ---
 PACKET_HEADER_FORMAT = "!IIHB"
@@ -34,87 +26,14 @@ FLAG_NACK = 0x02
 FLAG_INIT = 0x04
 FLAG_FIN = 0x08
 
-# --- 수신자 스레드 관리 ---
-stop_receiver = threading.Event()
+# --- 기본 설정 ---
+DEFAULT_FILE_SIZE_MB = 50
+DEFAULT_RECEIVER_HOST = "127.0.0.1"
+DEFAULT_TCP_PORT = 9998
+DEFAULT_MIDTP_PORT = 9999
+CHUNK_SIZE_RANGE = range(1400, 15401, 1400)  # 1400~15400, 1400씩 증가
 
 
-# --- 수신자 로직 (백그라운드 스레드에서 실행) ---
-def receiver_thread_func(host: str, tcp_port: int, midtp_port: int):
-    """TCP와 MIDTP 수신을 모두 처리하는 스레드 함수"""
-
-    # TCP 소켓 설정
-    tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    tcp_sock.bind((host, tcp_port))
-    tcp_sock.listen(1)
-    tcp_sock.settimeout(0.5)  # 루프 종료를 위해 타임아웃 설정
-
-    # MIDTP 소켓 설정
-    midtp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    midtp_sock.bind((host, midtp_port))
-    midtp_sock.settimeout(0.5)
-
-    print(f"🔧 TCP 포트 {tcp_port}, MIDTP 포트 {midtp_port}에서 수신 대기 중...")
-
-    while not stop_receiver.is_set():
-        # TCP 연결 처리
-        try:
-            conn, addr = tcp_sock.accept()
-            print(f"  📡 TCP 연결 수신: {addr}")
-            with conn:
-                # 파일 크기 수신
-                file_size_data = conn.recv(8)
-                if not file_size_data:
-                    continue
-                file_size = struct.unpack("!Q", file_size_data)[0]
-
-                bytes_received = 0
-                while bytes_received < file_size:
-                    chunk = conn.recv(65536)
-                    if not chunk:
-                        break
-                    bytes_received += len(chunk)
-
-                print(f"  ✅ TCP 수신 완료: {bytes_received / (1024*1024):.2f} MB")
-        except socket.timeout:
-            pass  # 타임아웃은 정상, 루프 계속
-        except Exception as e:
-            if not stop_receiver.is_set():
-                print(f"  ⚠️ TCP 오류: {e}")
-
-        # MIDTP 패킷 처리
-        try:
-            # MIDTP는 상태를 유지해야 하므로 간단한 상태 머신으로 구현
-            # 이 실험에서는 송신자가 전송을 완료하면 수신자는 자동으로 리셋됨
-            # 실제 구현에서는 세션 관리가 필요함
-            packet, sender_addr = midtp_sock.recvfrom(65535)
-            if len(packet) >= PACKET_HEADER_SIZE:
-                seq_num, total_packets, payload_len, flags = struct.unpack(
-                    PACKET_HEADER_FORMAT, packet[:PACKET_HEADER_SIZE]
-                )
-
-                # INIT 패킷 처리
-                if flags & FLAG_INIT:
-                    print(
-                        f"  📡 MIDTP 세션 시작: {sender_addr}, 총 {total_packets}개 패킷"
-                    )
-
-                # FIN 패킷 처리
-                if flags & FLAG_FIN:
-                    print(f"  ✅ MIDTP 수신 완료")
-
-        except socket.timeout:
-            pass
-        except Exception as e:
-            if not stop_receiver.is_set():
-                print(f"  ⚠️ MIDTP 오류: {e}")
-
-    tcp_sock.close()
-    midtp_sock.close()
-    print("🔧 수신자 스레드 종료.")
-
-
-# --- 송신자 로직 ---
 def run_tcp_transfer(host: str, port: int, data: bytes, chunk_size: int) -> float:
     """TCP로 데이터를 전송하고 처리율을 반환"""
     try:
@@ -169,14 +88,12 @@ def run_midtp_transfer(host: str, port: int, data: bytes, chunk_size: int) -> fl
 
         start_time = time.time()
 
-        # INIT 패킷 전송 (수신자가 주소를 알 수 있도록)
+        # INIT 패킷 전송 (수신자가 세션을 시작할 수 있도록)
         init_header = struct.pack(PACKET_HEADER_FORMAT, 0, total_packets, 0, FLAG_INIT)
         sock.sendto(init_header, receiver_addr)
         time.sleep(0.01)  # INIT 처리 대기
 
-        # MIDTP는 재전송 로직이 복잡하므로, 이 실험에서는 손실이 거의 없는
-        # 로컬 환경을 가정하고 재전송 없이 전송 시간만 측정하여
-        # 버퍼 오버플로우 현상을 관찰하는 데 집중합니다.
+        # 데이터 패킷 전송
         for packet in packets:
             sock.sendto(packet, receiver_addr)
 
@@ -186,9 +103,11 @@ def run_midtp_transfer(host: str, port: int, data: bytes, chunk_size: int) -> fl
         )
         sock.sendto(fin_header, receiver_addr)
 
-        # 모든 데이터가 전송되었다고 가정하고 시간 측정 종료
         end_time = time.time()
         sock.close()
+
+        # 수신자가 처리할 시간 대기
+        time.sleep(0.1)
 
         total_time = end_time - start_time
         throughput = (len(data) / (1024 * 1024)) / total_time if total_time > 0 else 0
@@ -199,7 +118,6 @@ def run_midtp_transfer(host: str, port: int, data: bytes, chunk_size: int) -> fl
         return 0
 
 
-# --- 결과 시각화 ---
 def plot_results(
     tcp_results: List[Tuple[int, float]],
     midtp_results: List[Tuple[int, float]],
@@ -269,24 +187,20 @@ def plot_results(
     plt.show()
 
 
-# --- 메인 실행 로직 ---
 def main():
     parser = argparse.ArgumentParser(
-        description="최적의 세그먼트 크기 탐색 실험",
+        description="최적 세그먼트 크기 실험 - 송신자",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 예시:
-  # 기본 실행 (50MB, 로컬호스트)
-  python3 find_optimal_segment.py
+  # 로컬 테스트
+  python3 experiment_sender.py --host 127.0.0.1 --file-size 50
 
-  # 100MB 파일로 테스트
-  python3 find_optimal_segment.py --file-size 100
+  # 원격 수신자로 테스트
+  python3 experiment_sender.py --host 192.168.1.100 --file-size 100
 
-  # 결과를 이미지 파일로 저장
-  python3 find_optimal_segment.py --output results.png
-
-  # 원격 수신자 테스트
-  python3 find_optimal_segment.py --host 192.168.1.100
+  # 결과를 이미지로 저장
+  python3 experiment_sender.py --host 192.168.1.100 --file-size 200 --output results.png
         """,
     )
 
@@ -325,29 +239,37 @@ def main():
         help="결과 그래프 저장 파일명 (예: results.png)",
     )
 
+    parser.add_argument(
+        "--chunk-sizes",
+        type=str,
+        default=None,
+        help="청크 크기 범위 (예: '1400-15400-1400' = 1400부터 15400까지 1400씩)",
+    )
+
     args = parser.parse_args()
 
-    print("=" * 70)
-    print("최적의 세그먼트 크기 탐색 실험")
-    print("=" * 70)
-    print(f"📋 파일 크기: {args.file_size} MB")
-    print(f"📋 수신자 주소: {args.host}")
-    print(f"📋 TCP 포트: {args.tcp_port}")
-    print(f"📋 MIDTP 포트: {args.midtp_port}")
-    print(f"📋 청크 크기 범위: {list(CHUNK_SIZE_RANGE)}")
-    print("=" * 70)
+    # 청크 크기 범위 파싱
+    chunk_sizes = CHUNK_SIZE_RANGE
+    if args.chunk_sizes:
+        try:
+            parts = args.chunk_sizes.split("-")
+            if len(parts) == 3:
+                start, end, step = map(int, parts)
+                chunk_sizes = range(start, end + 1, step)
+        except:
+            print("⚠️  잘못된 청크 크기 형식. 기본값 사용")
 
-    # 1. 수신자 스레드 시작
-    print("\n🚀 수신자 스레드 시작 중...")
-    receiver_thread = threading.Thread(
-        target=receiver_thread_func,
-        args=(args.host, args.tcp_port, args.midtp_port),
-        daemon=True,
+    print("=" * 70)
+    print("최적 세그먼트 크기 실험 - 송신자 (Sender)")
+    print("=" * 70)
+    print(
+        f"📋 수신자 주소: {args.host}:{args.tcp_port} (TCP), {args.host}:{args.midtp_port} (MIDTP)"
     )
-    receiver_thread.start()
-    time.sleep(1)  # 수신자가 준비될 때까지 잠시 대기
+    print(f"📋 파일 크기: {args.file_size} MB")
+    print(f"📋 청크 크기 범위: {list(chunk_sizes)}")
+    print("=" * 70)
 
-    # 2. 더미 데이터 생성
+    # 더미 데이터 생성
     file_size_bytes = args.file_size * 1024 * 1024
     print(f"\n📦 {args.file_size}MB 크기의 더미 데이터 생성 중...")
     dummy_data = os.urandom(file_size_bytes)
@@ -356,40 +278,33 @@ def main():
     tcp_results = []
     midtp_results = []
 
-    # 3. 청크 크기를 변경하며 실험 진행
-    print("\n🧪 청크 크기별 성능 측정을 시작합니다...\n")
+    # 청크 크기별 실험
+    print(f"\n🧪 청크 크기별 성능 측정 시작 (총 {len(list(chunk_sizes))}회)\n")
 
-    for idx, size in enumerate(CHUNK_SIZE_RANGE, 1):
-        print(
-            f"[{idx}/{len(list(CHUNK_SIZE_RANGE))}] 청크 크기: {size} Bytes 테스트 중"
-        )
+    for idx, size in enumerate(chunk_sizes, 1):
+        print(f"[{idx}/{len(list(chunk_sizes))}] 청크 크기: {size} Bytes")
         print("-" * 50)
 
         # TCP 테스트
-        print("  🔵 TCP 테스트 중...")
+        print("  🔵 TCP 전송 중...")
         tcp_throughput = run_tcp_transfer(args.host, args.tcp_port, dummy_data, size)
         tcp_results.append((size, tcp_throughput))
         print(f"  ✅ TCP 처리율: {tcp_throughput:.2f} MB/s")
-        time.sleep(0.5)  # 포트 정리 대기
+        time.sleep(0.5)
 
         # MIDTP 테스트
-        print("  🔴 MIDTP 테스트 중...")
+        print("  🔴 MIDTP 전송 중...")
         midtp_throughput = run_midtp_transfer(
             args.host, args.midtp_port, dummy_data, size
         )
         midtp_results.append((size, midtp_throughput))
         print(f"  ✅ MIDTP 처리율: {midtp_throughput:.2f} MB/s")
         print()
-        time.sleep(1)  # 다음 테스트 전 잠시 대기
+        time.sleep(1.0)
 
-    # 4. 수신자 스레드 종료
+    # 결과 요약
     print("=" * 70)
-    print("🏁 실험 완료. 수신자 스레드 종료 중...")
-    stop_receiver.set()
-    receiver_thread.join(timeout=2)
-
-    # 5. 결과 출력
-    print("\n📊 실험 결과 요약:")
+    print("📊 실험 결과 요약")
     print("=" * 70)
     print(f"{'청크 크기 (Bytes)':<20} {'TCP (MB/s)':<15} {'MIDTP (MB/s)':<15}")
     print("-" * 70)
@@ -397,21 +312,20 @@ def main():
         print(f"{tcp_size:<20} {tcp_tp:<15.2f} {midtp_tp:<15.2f}")
     print("=" * 70)
 
-    # 6. 결과 시각화
-    print("\n📈 결과 그래프를 생성합니다...")
+    # 그래프 생성
+    print("\n📈 결과 그래프 생성 중...")
     plot_results(tcp_results, midtp_results, args.output)
-    print("\n✅ 모든 작업 완료!")
+
+    print("\n✅ 모든 실험 완료!")
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\n⚠️ 사용자에 의해 중단되었습니다.")
-        stop_receiver.set()
+        print("\n\n⚠️  사용자에 의해 중단되었습니다.")
     except Exception as e:
         print(f"\n❌ 오류 발생: {e}")
         import traceback
 
         traceback.print_exc()
-        stop_receiver.set()
