@@ -1,0 +1,8 @@
+# QUIC 프로토콜 구현을 위한 라이브러리
+aioquic>=0.9.20
+
+# 데이터 시각화 (find_optimal_segment.py 실험용)
+matplotlib>=3.5.0
+
+# 비동기 프로그래밍 지원 (Python 3.7+에 포함되어 있으나 명시적 표기)
+# asyncio는 표준 라이브러리이므로 별도 설치 불필요
